@@ -7,6 +7,7 @@ from .observation_units.collector_unit import CollectorUnit
 from .observation_units.globalplan_collector_unit import GlobalplanCollectorUnit
 from .observation_units.pedsim_collector_unit import PedsimStateCollectorUnit
 from .observation_units.aggregate_collector_unit import AggregateCollectorUnit
+from .observation_units.semantic_ped_unit import SemanticAggregateUnit
 
 
 class ObservationManager:
@@ -36,10 +37,10 @@ class ObservationManager:
         self._obs_structur = obs_structur or [
             BaseCollectorUnit,
             GlobalplanCollectorUnit,
-            AggregateCollectorUnit,
+            SemanticAggregateUnit,
         ]
         self._observation_units = self._instantiate_units()
-        self._init_units()
+        self._inititialize_units()
 
     def _instantiate_units(self) -> List[CollectorUnit]:
         """
@@ -53,7 +54,7 @@ class ObservationManager:
             for collector_class in self._obs_structur
         ]
 
-    def _init_units(self) -> None:
+    def _inititialize_units(self) -> None:
         """
         Initialize all observation units.
         """

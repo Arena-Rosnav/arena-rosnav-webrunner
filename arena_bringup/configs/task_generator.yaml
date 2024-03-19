@@ -1,6 +1,3 @@
-episodes: 50
-autoreset: true
-
 SCENARIO:
   file: default.json
 
@@ -11,18 +8,17 @@ STAGED:
   curriculum: "default.yaml"
   index: 0
 
-DYNAMICMAP: {}
-
 RANDOM:
+  seed: -1
   static:
-    min: 0
-    max: 0
+    min: 5
+    max: 10
     models: ["shelf"]
   interactive:
     min: 0
     max: 0
     models: ["shelf"]
   dynamic:
-    min: 1
-    max: 5
+    min: 3
+    max: 15
     models: ["actor1"]

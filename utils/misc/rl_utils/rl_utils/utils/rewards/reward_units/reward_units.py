@@ -1,13 +1,16 @@
+import random
 from typing import Any, Callable, Dict
 from warnings import warn
 
 import numpy as np
+import rospy
+from rl_utils.utils.observation_collector.constants import DONE_REASONS, OBS_DICT_KEYS
 
-from ..constants import REWARD_CONSTANTS, DEFAULTS
+from ..constants import DEFAULTS, REWARD_CONSTANTS
 from ..reward_function import RewardFunction
-from .base_reward_units import RewardUnit, GlobalplanRewardUnit
+from ..utils import check_params, get_ped_type_min_distances
+from .base_reward_units import GlobalplanRewardUnit, RewardUnit
 from .reward_unit_factory import RewardUnitFactory
-from ..utils import check_params
 
 # UPDATE WHEN ADDING A NEW UNIT
 __all__ = [
@@ -23,12 +26,17 @@ __all__ = [
     "RewardAbruptVelocityChange",
     "RewardRootVelocityDifference",
     "RewardTwoFactorVelocityDifference",
+    "RewardActiveHeadingDirection",
 ]
 
 
 @RewardUnitFactory.register("goal_reached")
 class RewardGoalReached(RewardUnit):
-    DONE_INFO = {"is_done": True, "done_reason": 2, "is_success": True}
+    DONE_INFO = {
+        "is_done": True,
+        "done_reason": DONE_REASONS.SUCCESS.name,
+        "is_success": True,
+    }
     NOT_DONE_INFO = {"is_done": False}
 
     @check_params
@@ -68,9 +76,9 @@ class RewardGoalReached(RewardUnit):
         """
         if distance_to_goal < self._reward_function.goal_radius:
             self.add_reward(self._reward)
-            self.add_info(RewardGoalReached.DONE_INFO)
+            self.add_info(self.DONE_INFO)
         else:
-            self.add_info(RewardGoalReached.NOT_DONE_INFO)
+            self.add_info(self.NOT_DONE_INFO)
 
     def reset(self):
         self._goal_radius = self._reward_function.goal_radius
@@ -109,15 +117,15 @@ class RewardSafeDistance(RewardUnit):
 
     def __call__(self, *args: Any, **kwargs: Any):
         violation_in_blind_spot = False
-        if "full_laser_scan" in kwargs:
+        if "full_laser_scan" in kwargs and len(kwargs["full_laser_scan"]) > 0:
             violation_in_blind_spot = kwargs["full_laser_scan"].min() <= self._safe_dist
 
         if (
-            self._reward_function.get_internal_state_info("safe_dist_breached")
+            self.get_internal_state_info("safe_dist_breached")
             or violation_in_blind_spot
         ):
             self.add_reward(self._reward)
-            self.add_info(RewardSafeDistance.SAFE_DIST_VIOLATION_INFO)
+            self.add_info(self.SAFE_DIST_VIOLATION_INFO)
 
 
 @RewardUnitFactory.register("no_movement")
@@ -213,7 +221,11 @@ class RewardApproachGoal(RewardUnit):
 
 @RewardUnitFactory.register("collision")
 class RewardCollision(RewardUnit):
-    DONE_INFO = {"is_done": True, "done_reason": 1, "is_success": False}
+    DONE_INFO = {
+        "is_done": True,
+        "done_reason": DONE_REASONS.COLLISION.name,
+        "is_success": False,
+    }
 
     @check_params
     def __init__(
@@ -244,12 +256,15 @@ class RewardCollision(RewardUnit):
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         coll_in_blind_spots = False
         if "full_laser_scan" in kwargs:
-            coll_in_blind_spots = kwargs["full_laser_scan"].min() <= self.robot_radius
+            if len(kwargs["full_laser_scan"]) > 0:
+                coll_in_blind_spots = (
+                    kwargs["full_laser_scan"].min() <= self.robot_radius
+                )
 
-        laser_min = self._reward_function.get_internal_state_info("min_dist_laser")
+        laser_min = self.get_internal_state_info("min_dist_laser")
         if laser_min <= self.robot_radius or coll_in_blind_spots:
             self.add_reward(self._reward)
-            self.add_info(RewardCollision.DONE_INFO)
+            self.add_info(self.DONE_INFO)
 
 
 @RewardUnitFactory.register("distance_travelled")
@@ -644,3 +659,310 @@ class RewardTwoFactorVelocityDifference(RewardUnit):
 
     def reset(self):
         self.last_action = None
+
+
+@RewardUnitFactory.register("active_heading_direction")
+class RewardActiveHeadingDirection(RewardUnit):
+    """
+    Reward unit that calculates the reward based on the active heading direction of the robot.
+
+    Args:
+        reward_function (RewardFunction): The reward function to be used.
+        r_angle (float, optional): Weight for difference between max deviation of heading direction and desired heading direction. Defaults to 0.6.
+        theta_m (float, optional): Maximum allowable deviation of the heading direction. Defaults to np.pi/6.
+        theta_min (int, optional): Minimum allowable deviation of the heading direction. Defaults to 1000.
+        ped_min_dist (float, optional): Minimum distance to pedestrians. Defaults to 8.0.
+        iters (int, optional): Number of iterations to find a reachable available theta. Defaults to 60.
+        _on_safe_dist_violation (bool, optional): Flag indicating whether to penalize the reward on safe distance violation. Defaults to True.
+        *args: Variable length argument list.
+        **kwargs: Arbitrary keyword arguments.
+
+    Attributes:
+        _r_angle (float): Desired heading direction in the robot's local frame.
+        _theta_m (float): Maximum allowable deviation of the heading direction.
+        _theta_min (int): Minimum allowable deviation of the heading direction.
+        _ped_min_dist (float): Minimum application distance to pedestrians.
+        _iters (int): Number of iterations to find a reachable available theta.
+    """
+
+    def __init__(
+        self,
+        reward_function: RewardFunction,
+        r_angle: float = 0.6,
+        theta_m: float = np.pi / 6,
+        theta_min: int = 1000,
+        ped_min_dist: float = 8.0,
+        iters: int = 60,
+        _on_safe_dist_violation: bool = True,
+        *args,
+        **kwargs,
+    ) -> None:
+        super().__init__(reward_function, _on_safe_dist_violation, *args, **kwargs)
+        self._r_angle = r_angle
+        self._theta_m = theta_m
+        self._theta_min = theta_min
+        self._ped_min_dist = ped_min_dist
+        self._iters = iters
+
+    def __call__(
+        self,
+        goal_in_robot_frame: np.ndarray,
+        action: np.ndarray,
+        relative_location: np.ndarray,
+        relative_x_vel: np.ndarray,
+        relative_y_vel: np.ndarray,
+        *args,
+        **kwargs,
+    ) -> float:
+        """
+        Calculates the reward based on the active heading direction of the robot.
+
+        Args:
+            goal_in_robot_frame (np.ndarray): The goal position in the robot's frame of reference.
+            action (np.ndarray): The last action taken by the robot.
+            relative_location (np.ndarray): The relative location of the pedestrians.
+            relative_x_vel (np.ndarray): The relative x-velocity of the pedestrians.
+            relative_y_vel (np.ndarray): The relative y-velocity of the pedestrians.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            float: The calculated reward based on the active heading direction.
+        """
+        if (
+            relative_location is None
+            or relative_x_vel is None
+            or relative_y_vel is None
+        ):
+            return 0.0
+
+        # prefer goal theta:
+        theta_pre = goal_in_robot_frame[1]
+        d_theta = theta_pre
+
+        v_x = action[0]
+
+        # get the pedestrian's position:
+        if len(relative_location) != 0:  # tracker results
+            d_theta = np.pi / 2  # theta_pre
+            theta_min = self._theta_min
+            for _ in range(self._iters):
+                theta = random.uniform(-np.pi, np.pi)
+                free = True
+                for ped_location, ped_x_vel, ped_y_vel in zip(
+                    relative_location, relative_x_vel, relative_y_vel
+                ):
+                    p_x = ped_location[0]
+                    p_y = ped_location[1]
+                    p_vx = ped_x_vel
+                    p_vy = ped_y_vel
+
+                    ped_dis = np.linalg.norm([p_x, p_y])
+
+                    if ped_dis <= self._ped_min_dist:
+                        ped_theta = np.arctan2(p_y, p_x)
+
+                        # 3*robot_radius:= estimation for sum of the pedestrian radius and the robot radius
+                        vector = ped_dis**2 - (3 * self.robot_radius) ** 2
+                        if vector < 0:
+                            continue  # in this case the robot likely crashed into the pedestrian, disregard this pedestrian
+
+                        vo_theta = np.arctan2(
+                            3 * self.robot_radius,
+                            np.sqrt(vector),
+                        )
+                        # Check if the robot's trajectory intersects with the pedestrian's VO cone
+                        theta_rp = np.arctan2(
+                            v_x * np.sin(theta) - p_vy, v_x * np.cos(theta) - p_vx
+                        )
+                        if theta_rp >= (ped_theta - vo_theta) and theta_rp <= (
+                            ped_theta + vo_theta
+                        ):
+                            free = False
+                            break
+
+                # Find the reachable available theta that minimizes the difference from the goal theta
+                if free:
+                    theta_diff = (theta - theta_pre) ** 2
+                    if theta_diff < theta_min:
+                        theta_min = theta_diff
+                        d_theta = theta
+
+        else:  # no obstacles:
+            d_theta = theta_pre
+
+        return self._r_angle * (self._theta_m - abs(d_theta))
+
+
+@RewardUnitFactory.register("ped_type_safety_distance")
+class RewardPedTypeSafetyDistance(RewardUnit):
+    """
+    RewardPedTypeDistance is a reward unit that provides a reward based on the distance between the agent and a specific pedestrian type.
+
+    Args:
+        reward_function (RewardFunction): The reward function to which this reward unit belongs.
+        ped_type (int, optional): The type of pedestrian to consider. Defaults to DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE.TYPE.
+        reward (float, optional): The reward value to be added if the distance to the pedestrian type is less than the safety distance. Defaults to DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE.REWARD.
+        safety_distance (float, optional): The safety distance threshold. If the distance to the pedestrian type is less than this value, the reward is added. Defaults to DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE.DISTANCE.
+        _on_safe_dist_violation (bool, optional): A flag indicating whether to trigger a violation event when the safety distance is violated. Defaults to DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE._ON_SAFE_DIST_VIOLATION.
+        *args: Variable length argument list.
+        **kwargs: Arbitrary keyword arguments.
+
+    Attributes:
+        _type (int): The type of pedestrian to consider.
+        _reward (float): The reward value to be added if the distance to the pedestrian type is less than the safety distance.
+        _safety_distance (float): The safety distance threshold.
+
+    Methods:
+        __call__(*args, **kwargs): Calculates the reward based on the distance to the pedestrian type.
+        reset(): Resets the reward unit.
+    """
+
+    def __init__(
+        self,
+        reward_function: RewardFunction,
+        ped_type: int = DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE.TYPE,
+        reward: float = DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE.REWARD,
+        safety_distance: float = DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE.DISTANCE,
+        _on_safe_dist_violation: bool = DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE._ON_SAFE_DIST_VIOLATION,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(reward_function, _on_safe_dist_violation, *args, **kwargs)
+        self._type = ped_type
+        self._reward = reward
+        self._safety_distance = safety_distance
+
+    def __call__(self, *args: Any, **kwargs: Any) -> None:
+        ped_type_min_distances = self.get_internal_state_info(
+            "min_distances_per_ped_type"
+        )
+
+        if ped_type_min_distances is None:
+            self.add_internal_state_info(
+                key="min_distances_per_ped_type",
+                value=get_ped_type_min_distances(**kwargs),
+            )
+            ped_type_min_distances = self.get_internal_state_info(
+                "min_distances_per_ped_type"
+            )
+
+        if self._type not in ped_type_min_distances:
+            rospy.logwarn(
+                f"[{rospy.get_name()}, {self.__class__.__name__}] Pedestrian type {self._type} not found."
+            )
+            return
+
+        if ped_type_min_distances[self._type] < self._safety_distance:
+            self.add_reward(self._reward)
+
+    def reset(self):
+        pass
+
+
+@RewardUnitFactory.register("ped_type_collision")
+class RewardPedTypeCollision(RewardUnit):
+    """
+    RewardPedTypeCollision is a reward unit that provides a reward when the robot collides with a specific pedestrian type.
+
+    Args:
+        reward_function (RewardFunction): The reward function to which this reward unit belongs.
+        ped_type (int, optional): The specific pedestrian type to check for collision. Defaults to DEFAULTS.PED_TYPE_SPECIFIC_COLLISION.TYPE.
+        reward (float, optional): The reward value to be added when a collision with the specific pedestrian type occurs. Defaults to DEFAULTS.PED_TYPE_SPECIFIC_COLLISION.REWARD.
+        *args: Variable length argument list.
+        **kwargs: Arbitrary keyword arguments.
+
+    Attributes:
+        _type (int): The specific pedestrian type to check for collision.
+        _reward (float): The reward value to be added when a collision with the specific pedestrian type occurs.
+    """
+
+    def __init__(
+        self,
+        reward_function: RewardFunction,
+        ped_type: int = DEFAULTS.PED_TYPE_SPECIFIC_COLLISION.TYPE,
+        reward: float = DEFAULTS.PED_TYPE_SPECIFIC_COLLISION.REWARD,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(reward_function, True, *args, **kwargs)
+        self._type = ped_type
+        self._reward = reward
+
+    def __call__(self, *args: Any, **kwargs: Any) -> None:
+        """
+        Checks if the robot has collided with the specific pedestrian type and adds the reward if a collision occurs.
+
+        Args:
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+        """
+        ped_type_min_distances = self.get_internal_state_info(
+            "min_distances_per_ped_type"
+        )
+
+        if ped_type_min_distances is None:
+            self.add_internal_state_info(
+                key="min_distances_per_ped_type",
+                value=get_ped_type_min_distances(**kwargs),
+            )
+            ped_type_min_distances = self.get_internal_state_info(
+                "min_distances_per_ped_type"
+            )
+
+        if self._type not in ped_type_min_distances:
+            rospy.logwarn(
+                f"[{rospy.get_name()}, {self.__class__.__name__}] Pedestrian type {self._type} not found."
+            )
+            return
+
+        if ped_type_min_distances[self._type] <= self.robot_radius:
+            self.add_reward(self._reward)
+
+    def reset(self):
+        pass
+
+
+@RewardUnitFactory.register("ped_type_vel_constraint")
+class RewardPedTypeVelocityConstraint(RewardUnit):
+
+    def __init__(
+        self,
+        reward_function: RewardFunction,
+        ped_type: int = DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE.TYPE,
+        penalty_factor: float = 0.05,
+        active_distance: float = DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE.DISTANCE,
+        _on_safe_dist_violation: bool = DEFAULTS.PED_TYPE_SPECIFIC_SAFETY_DISTANCE._ON_SAFE_DIST_VIOLATION,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(reward_function, _on_safe_dist_violation, *args, **kwargs)
+        self._type = ped_type
+        self._penalty_factor = penalty_factor
+        self._active_distance = active_distance
+
+    def __call__(self, action: np.ndarray, *args: Any, **kwargs: Any) -> None:
+        ped_type_min_distances = self.get_internal_state_info(
+            "min_distances_per_ped_type"
+        )
+
+        if ped_type_min_distances is None:
+            self.add_internal_state_info(
+                key="min_distances_per_ped_type",
+                value=get_ped_type_min_distances(**kwargs),
+            )
+            ped_type_min_distances = self.get_internal_state_info(
+                "min_distances_per_ped_type"
+            )
+
+        if self._type not in ped_type_min_distances:
+            rospy.logwarn(
+                f"[{rospy.get_name()}, {self.__class__.__name__}] Pedestrian type {self._type} not found."
+            )
+            return
+
+        if ped_type_min_distances[self._type] < self._active_distance:
+            self.add_reward(-self._penalty_factor * action[0])
+
+    def reset(self):
+        pass

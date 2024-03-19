@@ -2,18 +2,20 @@ import dataclasses
 from enum import Enum
 import enum
 import math
-import random
-from typing import Any, Callable, List, Optional, TypeVar, TypedDict
+from typing import Any, Callable, Optional
+
+import numpy as np
 
 import rospy
 from task_generator.shared import Namespace, rosparam_get
-
-class Defaults:
-    class task_config:
-        no_of_episodes = 5
-
+import dynamic_reconfigure.client
 
 class Constants:
+
+    DEFAULT_PEDESTRIAN_MODEL = "actor1"
+
+    TASK_GENERATOR_SERVER_NODE = Namespace("task_generator_server")
+
     class Simulator(Enum):
         FLATLAND = "flatland"
         GAZEBO = "gazebo"
@@ -27,7 +29,6 @@ class Constants:
         FLATLAND = "flatland"
 
     class TaskMode:
-
         @enum.unique
         class TM_Obstacles(enum.Enum):
             PARAMETRIZED = "parametrized"
@@ -55,6 +56,7 @@ class Constants:
             DYNAMIC_MAP = "dynamic_map"
             CLEAR_FORBIDDEN_ZONES = "clear_forbidden_zones"
             RVIZ_UI = "rviz_ui"
+            BENCHMARK = "benchmark"
 
             @classmethod
             def prefix(cls, *args):
@@ -69,7 +71,7 @@ class Constants:
         "name": "full_static_laser",
         "frame": "full_laser",
         "topic": "full_scan",
-        "body": "link_base",
+        "body": "base_link",
         "broadcast_tf": "true",
         "origin": [0, 0, 0],
         "range": 2.0,
@@ -79,76 +81,53 @@ class Constants:
     }
 
 
-### TaskConfig
+# TaskConfig
+
 
 @dataclasses.dataclass
 class TaskConfig_General:
-    WAIT_FOR_SERVICE_TIMEOUT: float
-    MAX_RESET_FAIL_TIMES: int
+    WAIT_FOR_SERVICE_TIMEOUT: float = dataclasses.field(default_factory=lambda:rosparam_get(float, "timeout_wait_for_service", 60))
+    MAX_RESET_FAIL_TIMES: int = dataclasses.field(default_factory=lambda:rosparam_get(int, "max_reset_fail_times", 10))
+    RNG: np.random.Generator = dataclasses.field(default_factory=lambda:np.random.default_rng())
+    DESIRED_EPISODES: float = float("inf")
+
 
 @dataclasses.dataclass
 class TaskConfig_Robot:
-    GOAL_TOLERANCE_RADIUS: float
-    GOAL_TOLERANCE_ANGLE: float
-    SPAWN_ROBOT_SAFE_DIST: float
-    TIMEOUT: float
+    GOAL_TOLERANCE_RADIUS: float = 1.0
+    GOAL_TOLERANCE_ANGLE: float = 30 * math.pi/180
+    SPAWN_ROBOT_SAFE_DIST: float = 0.25
+    TIMEOUT: float = float("inf")
+
 
 @dataclasses.dataclass
 class TaskConfig_Obstacles:
-    MIN_DYNAMIC_OBS: int
-    MAX_DYNAMIC_OBS: int
+    OBSTACLE_MAX_RADIUS: float = 15
 
-    MIN_STATIC_OBS: int
-    MAX_STATIC_OBS: int
-
-    MIN_INTERACTIVE_OBS: int
-    MAX_INTERACTIVE_OBS: int
-
-    MODELS_DYNAMIC_OBSTACLES: List[str]
-    MODELS_INTERACTIVE_OBSTACLES: List[str]
-    MODELS_STATIC_OBSTACLES: List[str]
-
-    OBSTACLE_MAX_RADIUS: float
 
 @dataclasses.dataclass
 class TaskConfig:
-    General: TaskConfig_General
-    Robot: TaskConfig_Robot
-    Obstacles: TaskConfig_Obstacles
+    General: TaskConfig_General = dataclasses.field(default_factory=lambda:TaskConfig_General())
+    Robot: TaskConfig_Robot = dataclasses.field(default_factory=lambda:TaskConfig_Robot())
+    Obstacles: TaskConfig_Obstacles = dataclasses.field(default_factory=lambda:TaskConfig_Obstacles())
 
 
-def reconfigure() -> TaskConfig:
+Config = TaskConfig()
 
-    return TaskConfig(
-        General=TaskConfig_General(
-            WAIT_FOR_SERVICE_TIMEOUT = rosparam_get(float, "timeout_wait_for_service", 60),  # 60 secs
-            MAX_RESET_FAIL_TIMES = rosparam_get(int, "max_reset_fail_times", 10),
-        ),
-        Robot=TaskConfig_Robot(
-            GOAL_TOLERANCE_RADIUS = rosparam_get(float, "goal_radius", 1.0),
-            GOAL_TOLERANCE_ANGLE = rosparam_get(float, "goal_tolerance_angle", 30 * math.pi / 180),
-            SPAWN_ROBOT_SAFE_DIST = 0.25,
-            TIMEOUT = rosparam_get(float, "timeout", 3*60),  # 3 min
-        ),
-        Obstacles=TaskConfig_Obstacles(
-            MIN_DYNAMIC_OBS = rosparam_get(int, "~configuration/task_mode/random/interactive/min", 0),
-            MAX_DYNAMIC_OBS = rosparam_get(int, "~configuration/task_mode/random/interactive/max", 0),
+def _cb_reconfigure(config):
+    global Config
 
-            MIN_STATIC_OBS = rosparam_get(int, "~configuration/task_mode/random/static/min", 0),
-            MAX_STATIC_OBS = rosparam_get(int, "~configuration/task_mode/random/static/max", 0),
+    Config.General.RNG=np.random.default_rng((lambda x: x if x >= 0 else None)(config["RANDOM_seed"]))
+    Config.General.DESIRED_EPISODES=(lambda x: float("inf") if x<0 else x)(config["episodes"])
+    
+    Config.Robot.GOAL_TOLERANCE_RADIUS=config["goal_radius"]
+    Config.Robot.GOAL_TOLERANCE_ANGLE=config["goal_tolerance_angle"]
+    Config.Robot.TIMEOUT=(lambda x: float("inf") if x<0 else x)(config["timeout"])
 
-            MIN_INTERACTIVE_OBS = rosparam_get(int, "~configuration/task_mode/random/interactive/min", 0),
-            MAX_INTERACTIVE_OBS = rosparam_get(int, "~configuration/task_mode/random/interactive/max", 0),
-
-            MODELS_DYNAMIC_OBSTACLES = rosparam_get(list, "~configuration/task_mode/random/dynamic/models", []),
-            MODELS_INTERACTIVE_OBSTACLES = rosparam_get(list, "~configuration/task_mode/random/interactive/models", []),
-            MODELS_STATIC_OBSTACLES = rosparam_get(list, "~configuration/task_mode/random/static/models", []),
-
-            OBSTACLE_MAX_RADIUS = 15
-        )
-    )
-
-Config = reconfigure()
+dynamic_reconfigure.client.Client(
+    name=Constants.TASK_GENERATOR_SERVER_NODE,
+    config_callback=_cb_reconfigure
+)
 
 
 class FlatlandRandomModel:
@@ -177,9 +156,11 @@ class FlatlandRandomModel:
 
 
 # no ~configuration possible because node is not fully initialized at this point
-pedsim_ns = Namespace("task_generator_node/configuration/pedsim/default_actor_config")
+pedsim_ns = Namespace(
+    "task_generator_node/configuration/pedsim/default_actor_config")
 
-#TODO make everything dynamic_reconfigure
+
+# TODO make everything dynamic_reconfigure
 def lp(parameter: str, fallback: Any) -> Callable[[Optional[Any]], Any]:
     """
     load pedsim param
@@ -194,8 +175,9 @@ def lp(parameter: str, fallback: Any) -> Callable[[Optional[Any]], Any]:
         lo, hi = val[:2]
         gen = lambda: min(
             hi,
-            max(lo,
-                random.normalvariate((hi + lo) / 2, (hi - lo) / 6)
+            max(
+                lo,
+                Config.General.RNG.normal((hi + lo) / 2, (hi - lo) / 6)
             )
         )
         # gen = lambda: random.uniform(lo, hi)
@@ -211,10 +193,12 @@ class Pedsim:
     CHATTING_PROBABILITY = lp("CHATTING_PROBABILITY", 0.0)
     TELL_STORY_PROBABILITY = lp("TELL_STORY_PROBABILITY", 0.0)
     GROUP_TALKING_PROBABILITY = lp("GROUP_TALKING_PROBABILITY", 0.0)
-    TALKING_AND_WALKING_PROBABILITY = lp("TALKING_AND_WALKING_PROBABILITY", 0.0)
+    TALKING_AND_WALKING_PROBABILITY = lp(
+        "TALKING_AND_WALKING_PROBABILITY", 0.0)
     REQUESTING_SERVICE_PROBABILITY = lp("REQUESTING_SERVICE_PROBABILITY", 0.0)
     REQUESTING_GUIDE_PROBABILITY = lp("REQUESTING_GUIDE_PROBABILITY", 0.0)
-    REQUESTING_FOLLOWER_PROBABILITY = lp("REQUESTING_FOLLOWER_PROBABILITY", 0.0)
+    REQUESTING_FOLLOWER_PROBABILITY = lp(
+        "REQUESTING_FOLLOWER_PROBABILITY", 0.0)
     MAX_TALKING_DISTANCE = lp("MAX_TALKING_DISTANCE", 5.0)
     MAX_SERVICING_RADIUS = lp("MAX_SERVICING_RADIUS", 5.0)
     TALKING_BASE_TIME = lp("TALKING_BASE_TIME", 10.0)
