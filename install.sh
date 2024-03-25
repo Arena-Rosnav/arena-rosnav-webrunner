@@ -5,6 +5,43 @@ set -e
 # Store the current working directory
 current_dir="$(pwd)"
 
+# Check if the system is not running Ubuntu 20.04
+if [[ $(lsb_release -rs) != "20.04" ]]; then
+  echo "Arena Rosnav is intended to be run on Ubuntu 20.04, but you are running:"
+  echo $(lsb_release -a)
+  echo "This may result in the installation failing."
+
+  # Ask the user if they want to continue
+  read -p "Do you want to continue anyway? (Y/n): " choice
+  choice="${choice:-Y}"
+  if [[ "$choice" =~ ^[Yy] ]]; then
+    echo "Continuing..."
+  else
+    echo "Exiting script."
+    exit 1
+  fi
+fi
+# Check if Folder Empty
+if [[ -d ~/arena_ws ]]; then
+  echo "Install Folder ~/arena_ws already exists."
+  echo "This indicates Arena Rosnav is already installed."
+  echo "If you wish to reinstall, please delete it."
+  exit 1
+fi
+
+sudo add-apt-repository universe
+sudo apt update
+
+# ROS
+echo "Installing ROS...:"
+sudo sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list'
+curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | sudo apt-key add -
+sudo apt update
+sudo apt install -y ros-noetic-desktop-full
+if ! grep -q "source /opt/ros/noetic/setup.bash" ~/.bashrc; then
+  echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
+fi
+source ~/.bashrc
 
 # Getting Packages
 echo "Installing Deps...:"
@@ -18,9 +55,26 @@ if ! grep -q 'export PATH="$HOME/.local/bin"' ~/.bashrc; then
 fi
 
 
-echo "Re-Initializing...:"
-sudo rm "$ros_sources_list"
-sudo rosdep init
+# Check if the default ROS sources.list file already exists
+ros_sources_list="/etc/ros/rosdep/sources.list.d/20-default.list"
+if [[ -f "$ros_sources_list" ]]; then
+  echo "rosdep appears to be already initialized"
+  echo "Default ROS sources.list file already exists:"
+  echo "$ros_sources_list"
+  
+  # Ask the user if they want to delete the existing file
+  read -p "Do you want to keep the existing sources.list file or re-initialize rosdep? (K/r): " init_choice
+  init_choice="${init_choice:-K}"
+  if [[ "$init_choice" =~ ^[Kk] ]]; then
+    echo "Keeping File."
+  else
+    echo "Re-Initializing...:"
+    sudo rm "$ros_sources_list"
+    sudo rosdep init
+  fi
+  else
+    sudo rosdep init
+fi
 
 rosdep update
 
