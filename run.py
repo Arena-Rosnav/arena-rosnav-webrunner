@@ -78,7 +78,7 @@ elif(tasktype == 'evaluation'):
     
     model = os.getenv('model')
     planner = os.getenv('planner')
-    subprocess.run(f"roslaunch arena_bringup start_arena.launch tm_robots:=scenario tm_obstacles:=scenario model:={model} local_planner:={planner} map_file:=map_custom record_data:=true", shell=True)
+    subprocess.run(f"roslaunch arena_bringup start_arena.launch visualization:=none tm_robots:=scenario tm_obstacles:=scenario model:={model} local_planner:={planner} map_file:=map_custom record_data:=true", shell=True)
 
     f = FileCreator(base_path)
     items = os.listdir(f'{base_path}/src/arena/evaluation/arena-evaluation/data') 
@@ -93,7 +93,7 @@ elif(tasktype == 'benchmark'):
 
     model = os.getenv('model')
     planner = os.getenv('planner')
-    subprocess.run(f"roslaunch arena_bringup start_arena.launch tm_robots:=scenario tm_obstacles:=scenario model:={model} local_planner:={planner} map_file:=map_custom record_data:=true", shell=True)
+    subprocess.run(f"roslaunch arena_bringup start_arena.launch visualization:=none tm_robots:=scenario tm_obstacles:=scenario model:={model} local_planner:={planner} map_file:=map_custom record_data:=true", shell=True)
     
     f = FileCreator(base_path)
     items = os.listdir(f'{base_path}/src/arena/evaluation/arena-evaluation/data') 
