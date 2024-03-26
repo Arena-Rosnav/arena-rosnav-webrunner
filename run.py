@@ -57,16 +57,28 @@ while True:
 if(tasktype == 'training'):
 
     model = os.getenv('model')    
-    subprocess.run(f"source ./devel/setup.sh && roslaunch arena_bringup start_training.launch model:={model} map_folder_name=map_empty && python3 {base_path}/src/arena/arena-rosnav/training/scripts/train_agent.py --agent AGENT_22", shell=True)
+    subprocess.Popen(f"roslaunch arena_bringup start_training.launch map_folder_name:=dynamic_map model:={model} num_envs:=1 entity_manager:=pedsim", shell=True)
+    training = subprocess.Popen(f'poetry shell && python3 training/scripts/train_agent.py', shell=True, cwd="{base_path}/src/arena/arena-rosnav")
+
+    training.wait()
+
+    modelstring = ''
+    f = FileCreator(base_path)
+    for x in os.listdir(f'{base_path}/planners/rosnav/agents'):
+        if x.startswith(f'{model}_RosnavResNet_3'):
+            modelstring = x
+
+    zip64 = f.createBase64Zip(f"{base_path}/planners/rosnav/agents/{modelstring}")
     response = {
         "taskId": taskId,
+        "data": zip64,
     }
 
 elif(tasktype == 'evaluation'):
     
     model = os.getenv('model')
     planner = os.getenv('planner')
-    subprocess.run(f"source ./devel/setup.sh && roslaunch arena_bringup start_arena.launch tm_robots:=scenario tm_obstacles:=scenario model:={model} local_planner:={planner} map_file:=map_custom record_data:=true", shell=True)
+    subprocess.run(f"roslaunch arena_bringup start_arena.launch tm_robots:=scenario tm_obstacles:=scenario model:={model} local_planner:={planner} map_file:=map_custom record_data:=true", shell=True)
 
     f = FileCreator(base_path)
     items = os.listdir(f'{base_path}/src/arena/evaluation/arena-evaluation/data') 
@@ -81,7 +93,7 @@ elif(tasktype == 'benchmark'):
 
     model = os.getenv('model')
     planner = os.getenv('planner')
-    subprocess.run(f"source ./devel/setup.sh && roslaunch arena_bringup start_arena.launch tm_robots:=scenario tm_obstacles:=scenario model:={model} local_planner:={planner} map_file:=map_custom record_data:=true", shell=True)
+    subprocess.run(f"roslaunch arena_bringup start_arena.launch tm_robots:=scenario tm_obstacles:=scenario model:={model} local_planner:={planner} map_file:=map_custom record_data:=true", shell=True)
     
     f = FileCreator(base_path)
     items = os.listdir(f'{base_path}/src/arena/evaluation/arena-evaluation/data') 
@@ -99,8 +111,8 @@ elif(tasktype == 'benchmark'):
     response = {
         "taskId": taskId,
         "data": zip64,
-        "best_time": random.randint(20, 160), # TODO: PLACEHOLDER RANDOM NUMBER! Finish when Arena-Rosnav functionalities are there
-        "avg_collisions": random.randint(0, 5), # TODO: PLACEHOLDER RANDOM NUMBER! Finish when Arena-Rosnav functionalities are there
+        "best_time": random.randint(20, 160), # TODO: PLACEHOLDER RANDOM NUMBER! Finish when Arena-Rosnav functionalities are back
+        "avg_collisions": random.randint(0, 5), # TODO: PLACEHOLDER RANDOM NUMBER! Finish when Arena-Rosnav functionalities are back
     }
 
 else:
