@@ -1,5 +1,7 @@
 FROM osrf/ros:noetic-desktop-full
 
+SHELL ["/bin/bash", "-c"]
+
 RUN apt-get -y update && apt install curl software-properties-common -y
 
 # Install.sh equivalent
@@ -46,7 +48,7 @@ RUN echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
 WORKDIR $HOME/arena_ws/src/arena/arena-rosnav
 RUN export PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring # resolve faster
 RUN poetry lock
-RUN poetry run poetry install
+RUN poetry install
 RUN mkdir -p /var/cache/pypoetry/virtualenvs/
 RUN mkdir -p $HOME/.cache/pypoetry/virtualenvs/
 RUN poetry env use python3.8
@@ -66,20 +68,20 @@ WORKDIR $HOME/arena_ws/src
 RUN git clone https://github.com/ros/catkin.git
 WORKDIR $HOME/arena_ws
 
-RUN catkin build
+RUN source /opt/ros/noetic/setup.bash && catkin build
 
 RUN export ROS_MASTER_URI=http://127.0.0.1:11311/
 RUN export ROS_IP=127.0.0.1
 
-RUN echo 'source $HOME/arena_ws/devel/setup.bash' >> "~/.bashrc"
+RUN echo 'source $HOME/arena_ws/devel/setup.bash' >> "$HOME/.bashrc"
 
 # Install3.sh equivalent
 WORKDIR $HOME/arena_ws/src/arena/arena-rosnav
-RUN poetry run poetry install --no-root --with training
+RUN poetry install --no-root --with training
 
 WORKDIR $HOME/arena_ws
 
 # Install Ros-Bridge
 RUN apt install ros-noetic-foxglove-bridge -y
  
-CMD roslaunch arena_bringup start_arena.launch simulator:=gazebo
+CMD source /arena_ws/devel/setup.bash && roslaunch arena_bringup start_arena.launch simulator:=gazebo headless:=2
