@@ -65,7 +65,7 @@ if(tasktype == 'training'):
     modelstring = ''
     f = FileCreator(base_path)
     for x in os.listdir(f'{base_path}/planners/rosnav/agents'):
-        if x.startswith(f'{model}_RosnavResNet_3'):
+        if x.startswith(f'{model}_RosnavResNet_5_norm'):
             modelstring = x
 
     zip64 = f.createBase64Zip(f"{base_path}/planners/rosnav/agents/{modelstring}")
@@ -93,10 +93,10 @@ elif(tasktype == 'benchmark'):
 
     model = os.getenv('model')
     planner = os.getenv('planner')
-    subprocess.run(f"roslaunch arena_bringup start_arena.launch visualization:=none tm_robots:=scenario tm_obstacles:=scenario model:={model} local_planner:={planner} map_file:=map_custom record_data:=true", shell=True)
+    subprocess.run(f"roslaunch arena_bringup start_arena.launch tm_robots:=scenario tm_obstacles:=scenario model:={model} local_planner:={planner} map_file:=map_custom record_data:=true", shell=True)
     
     f = FileCreator(base_path)
-    items = os.listdir(f'{base_path}/src/arena/evaluation/arena-evaluation/data') 
+    items = os.listdir(f'{base_path}/src/arena/evaluation/arena-evaluation/data')
     parentFolder = items[0]
     items = os.listdir(f"{base_path}/src/arena/evaluation/arena-evaluation/data/{parentFolder}")
     dataFolder = items[0]
