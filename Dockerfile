@@ -47,11 +47,10 @@ RUN echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
 #python env init
 WORKDIR $HOME/arena_ws/src/arena/arena-rosnav
 RUN export PYTHON_KEYRING_BACKEND=keyring.backends.fail.Keyring # resolve faster
-RUN poetry lock
-RUN poetry install
-RUN mkdir -p /var/cache/pypoetry/virtualenvs/
-RUN mkdir -p $HOME/.cache/pypoetry/virtualenvs/
-RUN poetry env use python3.8
+
+
+RUN poetry export -f requirements.txt --output requirements.txt
+RUN pip install -r requirements.txt
 # FIXME: Can't open /bin/activate
 # RUN . "$(poetry env info -p)/bin/activate"
 WORKDIR $HOME/arena_ws
@@ -77,11 +76,11 @@ RUN echo 'source $HOME/arena_ws/devel/setup.bash' >> "$HOME/.bashrc"
 
 # Install3.sh equivalent
 WORKDIR $HOME/arena_ws/src/arena/arena-rosnav
-RUN poetry install --no-root --with training
+RUN python -m pip install -r requirements.txt
 
 WORKDIR $HOME/arena_ws
 
 # Install Ros-Bridge
 RUN apt install ros-noetic-foxglove-bridge -y
  
-CMD source /arena_ws/devel/setup.bash && roslaunch arena_bringup start_arena.launch simulator:=gazebo headless:=2
+CMD source /arena_ws/devel/setup.bash && roslaunch arena_bringup start_arena.launch visualization:=none
