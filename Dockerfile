@@ -78,9 +78,20 @@ RUN echo 'source $HOME/arena_ws/devel/setup.bash' >> "$HOME/.bashrc"
 WORKDIR $HOME/arena_ws/src/arena/arena-rosnav
 RUN python -m pip install -r requirements.txt
 
+# Insanity has led us here
+RUN pip install sismic toml matplotlib numba
+RUN apt install -y python3-tk
+
 WORKDIR $HOME/arena_ws
 
 # Install Ros-Bridge
 RUN apt install ros-noetic-foxglove-bridge -y
+
+# Fake a display
+ENV DEBIAN_FRONTEND noninteractive
+ENV DISPLAY :1
+
+RUN apt-get -y install xvfb
  
-CMD source /arena_ws/devel/setup.bash && roslaunch arena_bringup start_arena.launch visualization:=none
+CMD Xvfb :99 -screen 0 1024x768x24 & export DISPLAY=:99 && source /arena_ws/devel/setup.bash && roslaunch arena_bringup start_arena.launch visualization:=none headless:=2
+# CMD python -m pip show sismic
